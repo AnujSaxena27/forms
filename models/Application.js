@@ -156,9 +156,11 @@ const ApplicationSchema = new mongoose.Schema(
 );
 
 // Create indexes for efficient querying
-ApplicationSchema.index({ emailAddress: 1 });
+ApplicationSchema.index({ emailAddress: 1 }, { unique: true });
 ApplicationSchema.index({ submittedAt: -1 });
+ApplicationSchema.index({ createdAt: -1 });
 ApplicationSchema.index({ status: 1 });
+ApplicationSchema.index({ roleAppliedFor: 1 });
 
 // Prevent model recompilation during Next.js hot reload
 const Application = mongoose.models.Application || mongoose.model('Application', ApplicationSchema);

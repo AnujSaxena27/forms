@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import toast from 'react-hot-toast';
 
 export default function ApplicationForm() {
   const [formData, setFormData] = useState({
@@ -77,13 +78,60 @@ export default function ApplicationForm() {
     }));
   };
 
-  // Handle file changes
+  // Handle file changes with client-side validation
   const handleFileChange = (e) => {
     const { name, files: selectedFiles } = e.target;
     if (selectedFiles && selectedFiles[0]) {
+      const file = selectedFiles[0];
+      
+      // Client-side validation
+      let isValid = true;
+      let errorMsg = '';
+
+      // Validate photograph
+      if (name === 'photograph') {
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        const maxSize = 5 * 1024 * 1024; // 5MB
+
+        if (!allowedTypes.includes(file.type)) {
+          isValid = false;
+          errorMsg = 'Invalid file type. Please upload JPG, PNG, or WEBP image.';
+        } else if (file.size > maxSize) {
+          isValid = false;
+          errorMsg = `Image size exceeds 5MB. Your file: ${(file.size / 1024 / 1024).toFixed(2)}MB`;
+        }
+      }
+
+      // Validate resume
+      if (name === 'resume') {
+        const allowedType = 'application/pdf';
+        const maxSize = 10 * 1024 * 1024; // 10MB
+
+        if (file.type !== allowedType) {
+          isValid = false;
+          errorMsg = 'Invalid file type. Please upload PDF file only.';
+        } else if (file.size > maxSize) {
+          isValid = false;
+          errorMsg = `PDF size exceeds 10MB. Your file: ${(file.size / 1024 / 1024).toFixed(2)}MB`;
+        }
+      }
+
+      if (!isValid) {
+        toast.error(errorMsg, {
+          duration: 5000,
+        });
+        e.target.value = ''; // Clear the input
+        return;
+      }
+
+      // Show success toast
+      toast.success(`✓ ${file.name} selected`, {
+        duration: 2000,
+      });
+
       setFiles(prev => ({
         ...prev,
-        [name]: selectedFiles[0],
+        [name]: file,
       }));
     }
   };
@@ -99,11 +147,17 @@ export default function ApplicationForm() {
 
     console.log('🚀 Form submission started');
 
+    // Create loading toast
+    const loadingToast = toast.loading('Uploading files and submitting application...');
+
     try {
       // Validate files (client-side check)
       console.log('🔍 Validating files...');
       if (!files.photograph || !files.resume) {
         console.log('❌ Validation failed: Missing files');
+        toast.error('Please upload both photograph and resume', {
+          id: loadingToast,
+        });
         setErrorMessage('Please upload both photograph and resume');
         setLoading(false);
         return;
@@ -112,6 +166,9 @@ export default function ApplicationForm() {
       // Validate declaration
       if (!formData.declarationAccepted) {
         console.log('❌ Validation failed: Declaration not accepted');
+        toast.error('Please accept the declaration to continue', {
+          id: loadingToast,
+        });
         setErrorMessage('Please accept the declaration to continue');
         setLoading(false);
         return;
@@ -144,6 +201,13 @@ export default function ApplicationForm() {
       if (result.success) {
         console.log('✅ Application submitted successfully!');
         console.log('📋 Application ID:', result.applicationId);
+        
+        // Show success toast
+        toast.success('🎉 Application submitted successfully!', {
+          id: loadingToast,
+          duration: 5000,
+        });
+        
         setSuccessMessage('Application submitted successfully! We will get back to you soon.');
         
         // Reset form
@@ -183,6 +247,29 @@ export default function ApplicationForm() {
         // Parse error response and display appropriate message
         let errorMsg = result.message || 'Failed to submit application. Please try again.';
         let detailedErrorMessage = null;
+
+        // Show error-specific toast
+        if (result.errorType === 'DATABASE_AUTH') {
+          toast.error('🔐 Database authentication failed', {
+            id: loadingToast,
+            duration: 6000,
+          });
+        } else if (result.errorType === 'DATABASE_CONNECTION') {
+          toast.error('🌐 Cannot connect to database', {
+            id: loadingToast,
+            duration: 6000,
+          });
+        } else if (result.errorType === 'DATABASE_WRITE') {
+          toast.error('💾 Failed to save application', {
+            id: loadingToast,
+            duration: 6000,
+          });
+        } else {
+          toast.error(errorMsg, {
+            id: loadingToast,
+            duration: 6000,
+          });
+        }
 
         // Map error types to user-friendly messages and hints
         switch (result.errorType) {
@@ -269,12 +356,19 @@ export default function ApplicationForm() {
       console.error('Error Type:', error.name);
       console.error('Error Message:', error.message);
       
+      // Show generic error toast
+      toast.error('Failed to submit application. Please check your connection.', {
+        id: loadingToast,
+        duration: 6000,
+      });
+      
       // Provide helpful suggestions
       if (error.message.includes('Failed to fetch')) {
         console.error('💡 Suggestion: Check if your API server is running (npm run dev)');
+        setErrorMessage('Cannot connect to server. Please check your internet connection and try again.');
+      } else {
+        setErrorMessage('An error occurred while submitting your application. Please try again.');
       }
-      
-      setErrorMessage('An error occurred while submitting your application. Please check your internet connection and try again.');
     } finally {
       console.log('🏁 Form submission completed');
       setLoading(false);

@@ -1,7 +1,14 @@
 import { NextResponse } from 'next/server';
 import connectDB, { createErrorResponse, getHttpStatus } from '../../../lib/mongodb.js';
 import Application from '../../../models/Application.js';
+import FileUpload from '../../../models/FileUpload.js';
 import { uploadToCloudinary } from '../../../lib/cloudinary.js';
+import {
+  validateFile,
+  validateOrigin,
+  formatFileSize,
+  FILE_CONFIG,
+} from '../../../lib/fileValidation.js';
 
 /**
  * ==========================================
@@ -38,8 +45,28 @@ export async function POST(request) {
   console.log('========================================\n');
   
   try {
+    // ==========================================    // STEP 0: VALIDATE ORIGIN (SECURITY)
     // ==========================================
-    // STEP 1: CONNECT TO MONGODB ATLAS
+    console.log('🔒 [Step 0] Validating request origin...');
+    
+    const originValidation = validateOrigin(request);
+    if (!originValidation.valid) {
+      console.log('❌ Origin validation failed:', originValidation.error);
+      return NextResponse.json(
+        {
+          success: false,
+          errorType: 'ORIGIN_VALIDATION_FAILED',
+          message: originValidation.error,
+          hint: 'File uploads must be initiated from the website UI',
+          timestamp: new Date().toISOString(),
+        },
+        { status: 403 }
+      );
+    }
+    
+    console.log('✅ Origin validation passed\n');
+    
+    // ==========================================    // STEP 1: CONNECT TO MONGODB ATLAS
     // ==========================================
     console.log('🔌 [Step 1] Connecting to MongoDB Atlas...');
     
@@ -72,49 +99,68 @@ export async function POST(request) {
     if (!photograph || !resume) {
       console.log('❌ Validation failed: Missing files');
       return NextResponse.json(
-        { success: false, message: 'Photograph and resume are required' },
+        {
+          success: false,
+          errorType: 'MISSING_FILES',
+          message: 'Photograph and resume are required',
+          hint: 'Please upload both photograph and resume files',
+          timestamp: new Date().toISOString(),
+        },
         { status: 400 }
       );
     }
     
-    // Validate file types
-    if (!photograph.type.startsWith('image/')) {
-      console.log('❌ Validation failed: Invalid photograph type');
+    // Comprehensive photograph validation
+    const photographBuffer = await photograph.arrayBuffer();
+    const photographValidation = await validateFile(photograph, 'image', photographBuffer);
+    
+    if (!photographValidation.valid) {
+      console.log('❌ Photograph validation failed:', photographValidation.error);
       return NextResponse.json(
-        { success: false, message: 'Photograph must be an image file' },
+        {
+          success: false,
+          errorType: 'INVALID_FILE_TYPE',
+          message: photographValidation.error,
+          details: {
+            fileName: photograph.name,
+            fileSize: formatFileSize(photograph.size),
+            fileType: photograph.type,
+            category: 'photograph',
+          },
+          hint: `Allowed formats: ${FILE_CONFIG.image.allowedExtensions.join(', ')}. Max size: ${FILE_CONFIG.image.maxSize / 1024 / 1024}MB`,
+          timestamp: new Date().toISOString(),
+        },
         { status: 400 }
       );
     }
     
-    if (resume.type !== 'application/pdf') {
-      console.log('❌ Validation failed: Invalid resume type');
-      return NextResponse.json(
-        { success: false, message: 'Resume must be a PDF file' },
-        { status: 400 }
-      );
-    }
+    // Comprehensive resume validation
+    const resumeBuffer = await resume.arrayBuffer();
+    const resumeValidation = await validateFile(resume, 'pdf', resumeBuffer);
     
-    // Validate file sizes (5MB for image, 10MB for PDF)
-    const maxImageSize = 5 * 1024 * 1024; // 5MB
-    const maxPdfSize = 10 * 1024 * 1024; // 10MB
-    
-    if (photograph.size > maxImageSize) {
-      console.log('❌ Validation failed: Photograph too large');
+    if (!resumeValidation.valid) {
+      console.log('❌ Resume validation failed:', resumeValidation.error);
       return NextResponse.json(
-        { success: false, message: 'Photograph size must be less than 5MB' },
-        { status: 400 }
-      );
-    }
-    
-    if (resume.size > maxPdfSize) {
-      console.log('❌ Validation failed: Resume too large');
-      return NextResponse.json(
-        { success: false, message: 'Resume size must be less than 10MB' },
+        {
+          success: false,
+          errorType: 'INVALID_FILE_TYPE',
+          message: resumeValidation.error,
+          details: {
+            fileName: resume.name,
+            fileSize: formatFileSize(resume.size),
+            fileType: resume.type,
+            category: 'resume',
+          },
+          hint: `Allowed formats: ${FILE_CONFIG.pdf.allowedExtensions.join(', ')}. Max size: ${FILE_CONFIG.pdf.maxSize / 1024 / 1024}MB`,
+          timestamp: new Date().toISOString(),
+        },
         { status: 400 }
       );
     }
     
     console.log('✅ File validation passed');
+    console.log(`  Photograph: ${photographValidation.sanitizedName} (${formatFileSize(photograph.size)})`);
+    console.log(`  Resume: ${resumeValidation.sanitizedName} (${formatFileSize(resume.size)})`);
     
     // Step 4: Upload files to Cloudinary
     console.log('☁️ Step 4: Uploading files to Cloudinary...');
@@ -122,17 +168,15 @@ export async function POST(request) {
     // Log photograph details
     console.log('📸 Photograph details:');
     console.log(`  Name: ${photograph.name}`);
-    console.log(`  Size: ${photograph.size} bytes (${(photograph.size / 1024).toFixed(2)} KB)`);
+    console.log(`  Sanitized: ${photographValidation.sanitizedName}`);
+    console.log(`  Size: ${formatFileSize(photograph.size)}`);
     console.log(`  Type: ${photograph.type}`);
     
-    // Convert files to base64 for Cloudinary upload
-    const photographBuffer = await photograph.arrayBuffer();
+    // Convert files to base64 for Cloudinary upload (buffers already loaded)
     const photographBase64 = `data:${photograph.type};base64,${Buffer.from(photographBuffer).toString('base64')}`;
+    const resumeBase64 = `data:${resume.type};base64,${Buffer.from(resumeBuffer).toString('base64')}`;
     
     console.log(`  Base64 length: ${photographBase64.length}`);
-    
-    const resumeBuffer = await resume.arrayBuffer();
-    const resumeBase64 = `data:${resume.type};base64,${Buffer.from(resumeBuffer).toString('base64')}`;
     
     // Upload photograph to Cloudinary
     console.log('📤 Uploading photograph to Cloudinary...');
@@ -145,7 +189,14 @@ export async function POST(request) {
     if (!photographUpload.success) {
       console.log('❌ Photograph upload failed:', photographUpload.error);
       return NextResponse.json(
-        { success: false, message: 'Failed to upload photograph', error: photographUpload.error },
+        {
+          success: false,
+          errorType: 'CLOUDINARY_UPLOAD_FAILED',
+          message: 'Failed to upload photograph',
+          details: { error: photographUpload.error },
+          hint: 'Please try again or contact support if the issue persists',
+          timestamp: new Date().toISOString(),
+        },
         { status: 500 }
       );
     }
@@ -163,11 +214,72 @@ export async function POST(request) {
     if (!resumeUpload.success) {
       console.log('❌ Resume upload failed:', resumeUpload.error);
       return NextResponse.json(
-        { success: false, message: 'Failed to upload resume', error: resumeUpload.error },
+        {
+          success: false,
+          errorType: 'CLOUDINARY_UPLOAD_FAILED',
+          message: 'Failed to upload resume',
+          details: { error: resumeUpload.error },
+          hint: 'Please try again or contact support if the issue persists',
+          timestamp: new Date().toISOString(),
+        },
         { status: 500 }
       );
     }
     console.log('✅ Resume uploaded:', resumeUpload.url);
+    
+    // Save file upload records to database
+    console.log('💾 Saving file upload records...');
+    const userAgent = request.headers.get('user-agent') || 'unknown';
+    const ipAddress = request.headers.get('x-forwarded-for') || 
+                      request.headers.get('x-real-ip') || 
+                      'unknown';
+    
+    try {
+      // Save photograph record
+      const photographRecord = new FileUpload({
+        cloudinaryUrl: photographUpload.url,
+        cloudinaryPublicId: photographUpload.publicId,
+        cloudinaryResourceType: 'image',
+        originalFileName: photograph.name,
+        sanitizedFileName: photographValidation.sanitizedName,
+        fileType: photograph.type,
+        fileCategory: 'image',
+        fileSize: photograph.size,
+        uploadedBy: formData.get('emailAddress'),
+        uploadPurpose: 'application_photograph',
+        uploadSource: 'web',
+        uploadIPAddress: ipAddress,
+        userAgent,
+        status: 'active',
+        validationPassed: true,
+      });
+      await photographRecord.save();
+      
+      // Save resume record
+      const resumeRecord = new FileUpload({
+        cloudinaryUrl: resumeUpload.url,
+        cloudinaryPublicId: resumeUpload.publicId,
+        cloudinaryResourceType: 'raw',
+        originalFileName: resume.name,
+        sanitizedFileName: resumeValidation.sanitizedName,
+        fileType: resume.type,
+        fileCategory: 'pdf',
+        fileSize: resume.size,
+        uploadedBy: formData.get('emailAddress'),
+        uploadPurpose: 'application_resume',
+        uploadSource: 'web',
+        uploadIPAddress: ipAddress,
+        userAgent,
+        status: 'active',
+        validationPassed: true,
+      });
+      await resumeRecord.save();
+      
+      console.log('✅ File upload records saved');
+    } catch (fileRecordError) {
+      console.warn('⚠️ Failed to save file records (non-critical):', fileRecordError.message);
+      // Continue with application submission even if file records fail
+    }
     
     // Step 5: Prepare application data (ONLY URLs, no file buffers)
     console.log('📦 Step 5: Preparing application data...');
